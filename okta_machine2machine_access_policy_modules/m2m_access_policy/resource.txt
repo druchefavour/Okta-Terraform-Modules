@@ -1,0 +1,20 @@
+data "okta_auth_server" "this" {
+  name = var.auth_server_id
+}
+
+resource "okta_auth_server_policy_rule" "env_rules" {
+  for_each = toset(var.envs)
+
+  auth_server_id = data.okta_auth_server.this.id
+  policy_id      = data.okta_auth_server.this.default_policy_id  # IMPORTANT
+
+  name           = "${var.default_basename}-${each.key}-Access-Rule"
+  status         = var.status
+  priority       = lookup(var.rule_priority_by_env, each.key, 10 + index(var.envs, each.key))
+
+  client_whitelist       = [local.effective_client_ids_by_env[each.key]]
+  grant_type_whitelist   = ["client_credentials"]
+  scope_whitelist        = lookup(var.scopes_by_env, each.key, [])
+
+  access_token_lifetime_minutes = var.access_token_lifetime_minutes
+}

@@ -1,0 +1,117 @@
+# ── Provider is expected to be configured by the caller (see example below).
+
+locals {
+  # Map env => computed labels
+  env_profile_label = {
+    for env in var.environments :
+    env => "${var.default_basename}-${upper(env)}"
+  }
+
+  env_display_label = {
+    for env in var.environments :
+    env => (
+      var.application_display_basename != null
+      ? "${var.application_display_basename}-${upper(env)}"
+      : "${var.default_basename}-${upper(env)}"
+    )
+  }
+
+  # Build a normalized map only for envs that have a client_id supplied
+  work_items = {
+    for env in var.environments :
+    env => {
+      client_id     = lookup(var.apps_by_env, env, null)
+      profile_label = local.env_profile_label[env]
+      display_label = local.env_display_label[env]
+    }
+    if contains(keys(var.apps_by_env), env)
+  }
+}
+
+locals {
+  auth_header = var.use_oauth_for_api ? "Authorization: Bearer ${var.oauth_bearer_token}" : "Authorization: SSWS ${var.okta_api_token}"
+}
+
+
+
+resource "okta_auth_server_scope" "scopes" {
+  for_each       = toset(var.custom_scopes)
+  auth_server_id = var.auth_server_id
+
+  name         = each.value
+  display_name = each.value
+  description  = "Custom scope ${each.value}"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Create ONE custom claim: <default-basename>-Role
+# Value: app.profile.label (so the token shows default-basename-<ENV> for the calling app)
+resource "okta_auth_server_claim" "role_claim" {
+  auth_server_id          = var.auth_server_id
+  name                    = "${var.default_basename}-Role"
+  claim_type              = "RESOURCE"         # Access token (M2M)
+  value_type              = "EXPRESSION"
+  value                   = "app.profile.label"
+  always_include_in_token = true
+  scopes                  = [for s in okta_auth_server_scope.scopes : s.name]
+
+  depends_on = [okta_auth_server_scope.scopes]
+}
+
+# Update each app's profile.label via Okta Apps API using client_id as the path ID
+# Note: For OIDC clients, client_id == appId (Okta uses the app ID for the client_id).
+# We'll PUT the full doc required by Okta and set the environment-specific labels.
+resource "null_resource" "update_app_profile" {
+  for_each = local.work_items
+
+  # Any change here causes the null_resource to be replaced,
+  # which re-runs the 'create' provisioner.
+  triggers = {
+    client_id     = each.value.client_id
+    profile_label = each.value.profile_label
+    display_label = each.value.display_label
+
+    # Optional: include the rendered payload hash so any template edit also retriggers
+    payload_sha1  = sha1(templatefile("${path.module}/templates/update_app_payload.json.tmpl", {
+      client_id     = each.value.client_id,
+      profile_label = each.value.profile_label,
+      display_label = each.value.display_label
+    }))
+  }
+
+  # Default is 'create' even if you omit 'when', but being explicit is fine.
+  provisioner "local-exec" {
+    when    = create
+    command = <<-EOT
+      set -euo pipefail
+      BODY_FILE="$(mktemp)"
+
+      cat > "$BODY_FILE" <<'JSON'
+      ${templatefile("${path.module}/templates/update_app_payload.json.tmpl", {
+        client_id     = each.value.client_id,
+        profile_label = each.value.profile_label,
+        display_label = each.value.display_label
+      })}
+JSON
+
+      curl -sS -X PUT "https://${var.okta_domain}/api/v1/apps/${each.value.client_id}" \
+        -H "Accept: application/json" \
+        -H "Content-Type: application/json" \
+        -H "${local.auth_header}" \
+        --data @"$BODY_FILE" \
+        --fail --show-error --location >/dev/null
+
+      rm -f "$BODY_FILE"
+    EOT
+    interpreter = ["/usr/bin/env", "bash", "-c"]
+  }
+
+  # If you need to do anything on destroy (usually not necessary here), you can add:
+  # provisioner "local-exec" {
+  #   when    = destroy
+  #   command = "echo 'Cleanup (if needed)'"
+  # }
+}

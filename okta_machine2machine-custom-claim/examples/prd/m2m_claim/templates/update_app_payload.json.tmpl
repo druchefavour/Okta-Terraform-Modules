@@ -1,0 +1,29 @@
+{
+  "name": "oidc_client",
+  "label": "${display_label}",
+  "signOnMode": "OPENID_CONNECT",
+  "credentials": {
+    "oauthClient": {
+      "autoKeyRotation": true,
+      "client_id": "${client_id}",
+      "token_endpoint_auth_method": "client_secret_basic"
+    }
+  },
+  "profile": {
+    "label": "${profile_label}"
+  },
+  "settings": {
+    "oauthClient": {
+      "client_uri": null,
+      "logo_uri": null,
+      "redirect_uris": [],
+      "response_types": ["token"],
+      "grant_types": ["client_credentials"],
+      "application_type": "service",
+      "consent_method": "REQUIRED",
+      "issuer_mode": "DYNAMIC",
+      "idp_initiated_login": { "mode": "DISABLED", "default_scope": [] },
+      "wildcard_redirect": "DISABLED"
+    }
+  }
+}
